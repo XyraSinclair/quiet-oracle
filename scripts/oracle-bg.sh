@@ -55,8 +55,31 @@ done
 node -e 'process.exit(typeof WebSocket === "function" ? 0 : 1)' 2>/dev/null \
   || { echo "oracle-bg: node >= 22 required (the salvage scraper needs the global WebSocket)" >&2; exit 5; }
 
-PORT="${ORACLE_BG_PORT:-9222}"
-PROFILE="${ORACLE_BG_PROFILE:-${TMPDIR:-/tmp}/oracle-bg-chrome}"
+# Per-RUN unique port + profile by default (fix 2026-08-10). A shared default
+# profile is a foreground hazard, not just a collision hazard: launching while
+# another Chrome holds the same profile's singleton lock makes the new process
+# FORWARD its open request to the existing instance, which RAISES a window —
+# `open -g` only backgrounds the process it launches, not the forward target.
+# Shared defaults also made concurrent sessions mutually kill each other's
+# dedicated Chrome via the stale-reclaim logic ("Remote Chrome connection
+# lost" / "Prompt did not appear"). Deriving both from the slug removes the
+# whole class; env overrides still win.
+derive_port() {  # slug -> deterministic port in 9300..9899, then scan upward to a free one
+  local port; port=$((9300 + $(printf '%s' "$SLUG" | cksum | cut -d' ' -f1) % 600))
+  local tries=0
+  while [ "$tries" -lt 50 ]; do
+    if ! curl -s --max-time 1 "http://127.0.0.1:$port/json/version" >/dev/null 2>&1 \
+       && ! lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+      printf '%s\n' "$port"; return 0
+    fi
+    port=$((port + 1)); tries=$((tries + 1))
+  done
+  echo "oracle-bg: no free port found in the derived 9300..9899 scan range" >&2
+  return 1
+}
+PORT="${ORACLE_BG_PORT:-$(derive_port)}" || exit 4
+[ -n "$PORT" ] || exit 4
+PROFILE="${ORACLE_BG_PROFILE:-${TMPDIR:-/tmp}/oracle-bg-chrome-$SLUG}"
 MODEL="${ORACLE_BG_MODEL:-Pro}"
 URL="${ORACLE_CHATGPT_URL:-https://chatgpt.com/}"
 # Exact pin: 0.17.1 fixes 0.17.0's broken composer send. Override with
