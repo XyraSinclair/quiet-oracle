@@ -60,7 +60,13 @@ sessions and logs the user out of every Google account in their REAL Chrome
 launcher copies only `chatgpt.com` and `openai.com` cookies. Never widen it.
 
 **Concurrency and Cloudflare (measured 2026-07):** parallel sessions work
-with distinct `ORACLE_BG_PORT`/`ORACLE_BG_PROFILE` per run, but
+with distinct `ORACLE_BG_PORT`/`ORACLE_BG_PROFILE` per run — and this is
+mandatory whenever another agent session might have an Oracle run live: with
+defaults, the launcher sees the other session's debug Chrome and attaches to
+it ("reuse an existing remote Chrome session" in the log), then both runs
+break ("Prompt did not appear" / "Remote Chrome connection lost"). Check for
+an existing `--remote-debugging-port` Chrome before launching; if present,
+pick a fresh port and profile. Additionally,
 chatgpt.com's edge challenges fresh automation profiles when several launch
 in quick succession — the first 1–2 pass, later ones hit "Just a moment…"
 (`cf_clearance` is IP+fingerprint-bound and never transfers with seeded
