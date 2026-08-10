@@ -17,14 +17,24 @@
 #   oracle-bg.sh <prompt-file> [slug] [-- extra oracle args...]
 # Env overrides: ORACLE_BG_PORT (9222), ORACLE_BG_MODEL ("Pro"),
 #   ORACLE_BG_PROFILE ($TMPDIR/oracle-bg-chrome), ORACLE_CHATGPT_URL,
-#   ORACLE_BG_PKG (@steipete/oracle — recipe verified against 0.16.x; pin
-#   ORACLE_BG_PKG=@steipete/oracle@0.16.1 if a newer release breaks it).
+#   ORACLE_BG_PKG (default @steipete/oracle@0.17.1 — exact pin, see below).
 #
 # Model default "Pro" (verified 2026-07): the ChatGPT picker is two-axis —
 # a model-family submenu times an effort tier (Instant / Medium / High /
 # Extra High / Pro). "Pro" selects the Pro effort tier on the account's
 # current family. Do NOT pass a combined family+Pro label: oracle <=0.16.1
 # hard-rejects it.
+#
+# Picker regression + auto-fallback (verified 2026-08-10): ChatGPT moved the
+# effort tiers into an "Advanced" submenu that oracle <=0.17.1 cannot descend
+# ("Unable to find model option matching 'Pro'"), and 0.17.0's composer send
+# is broken ("Prompt did not appear in conversation"). 0.17.1 sends fine, so
+# this script pins it, tries Pro first, and on the picker error retries once
+# with --browser-model-strategy current (the profile's active model),
+# disclosing loudly that the answer is NOT guaranteed Pro-tier. Pro-tier
+# restoration paths: an oracle release that handles the Advanced submenu, or
+# the user setting their ChatGPT current model to Pro once in their real
+# browser (then `current` IS Pro).
 set -uo pipefail
 umask 077  # seeded cookies + answer files must never be world-readable
 
@@ -49,7 +59,9 @@ PORT="${ORACLE_BG_PORT:-9222}"
 PROFILE="${ORACLE_BG_PROFILE:-${TMPDIR:-/tmp}/oracle-bg-chrome}"
 MODEL="${ORACLE_BG_MODEL:-Pro}"
 URL="${ORACLE_CHATGPT_URL:-https://chatgpt.com/}"
-PKG="${ORACLE_BG_PKG:-@steipete/oracle}"
+# Exact pin: 0.17.1 fixes 0.17.0's broken composer send. Override with
+# ORACLE_BG_PKG if a newer release restores Pro picking.
+PKG="${ORACLE_BG_PKG:-@steipete/oracle@0.17.1}"
 CHROME_ROOT="$HOME/Library/Application Support/Google/Chrome"
 
 SCRAPER="$(cd "$(dirname "$0")" && pwd)/oracle-scrape.mjs"
@@ -152,44 +164,72 @@ curl -s "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1 || { echo "oracle-
 # answer is terminal (per-turn action bar up, no stop button) and stable for
 # 90s while oracle still hasn't finalized, we scrape it directly and end the
 # run.
-npx -y "$PKG" \
-  --engine browser \
-  --remote-chrome "127.0.0.1:$PORT" \
-  --browser-model-strategy select \
-  --model "$MODEL" \
-  --slug "$SLUG" \
-  --chatgpt-url "$URL" \
-  --browser-attachments auto \
-  --prompt "$(cat "$PROMPT_FILE")" \
-  --timeout auto \
-  ${EXTRA[@]+"${EXTRA[@]}"} &
-ORACLE_PID=$!
+ORACLE_LOG="${TMPDIR:-/tmp}/oracle-bg-${SLUG}-run.log"
+: > "$ORACLE_LOG"
 
 salvage() {
   [ -f "$SCRAPER" ] || return 1
   node "$SCRAPER" --port "$PORT" --out "$SALVAGE_OUT" --stable-seconds "${1:-90}" 2>&1
 }
 
-while kill -0 "$ORACLE_PID" 2>/dev/null; do
-  sleep 30
-  kill -0 "$ORACLE_PID" 2>/dev/null || break
-  if salvage 90 >/dev/null 2>&1; then
-    # Answer proven terminal + stable 90s and oracle still spinning: its
-    # detector will never fire. Scrape wins; stop oracle and report.
-    pkill -TERM -P "$ORACLE_PID" 2>/dev/null; kill -TERM "$ORACLE_PID" 2>/dev/null
-    wait "$ORACLE_PID" 2>/dev/null
-    ORACLE_PID=""
-    echo "oracle-bg: SALVAGED answer via CDP scrape (oracle's completion detector missed it)" >&2
-    echo "oracle-bg: answer file: $SALVAGE_OUT" >&2
-    echo "===== ORACLE ANSWER (salvaged) ====="
-    cat "$SALVAGE_OUT"
-    exit 0
-  fi
-done
+# run_oracle <select|current>: launch oracle with the given model strategy,
+# run the salvage watchdog beside it, return oracle's exit status. Output is
+# mirrored to $ORACLE_LOG so the caller can classify failures.
+run_oracle() {
+  local strategy="$1" model_args=(--browser-model-strategy "$1")
+  [ "$strategy" = "select" ] && model_args+=(--model "$MODEL")
+  npx -y "$PKG" \
+    --engine browser \
+    --remote-chrome "127.0.0.1:$PORT" \
+    "${model_args[@]}" \
+    --slug "$SLUG" \
+    --chatgpt-url "$URL" \
+    --browser-attachments auto \
+    --prompt "$(cat "$PROMPT_FILE")" \
+    --timeout auto \
+    ${EXTRA[@]+"${EXTRA[@]}"} > >(tee -a "$ORACLE_LOG") 2> >(tee -a "$ORACLE_LOG" >&2) &
+  ORACLE_PID=$!
 
-wait "$ORACLE_PID"
+  while kill -0 "$ORACLE_PID" 2>/dev/null; do
+    sleep 30
+    kill -0 "$ORACLE_PID" 2>/dev/null || break
+    if salvage 90 >/dev/null 2>&1; then
+      # Answer proven terminal + stable 90s and oracle still spinning: its
+      # detector will never fire. Scrape wins; stop oracle and report.
+      pkill -TERM -P "$ORACLE_PID" 2>/dev/null; kill -TERM "$ORACLE_PID" 2>/dev/null
+      wait "$ORACLE_PID" 2>/dev/null
+      ORACLE_PID=""
+      echo "oracle-bg: SALVAGED answer via CDP scrape (oracle's completion detector missed it)" >&2
+      echo "oracle-bg: answer file: $SALVAGE_OUT" >&2
+      echo "===== ORACLE ANSWER (salvaged) ====="
+      cat "$SALVAGE_OUT"
+      exit 0
+    fi
+  done
+
+  wait "$ORACLE_PID"
+  local st=$?
+  ORACLE_PID=""
+  return "$st"
+}
+
+run_oracle select
 ORACLE_STATUS=$?
-ORACLE_PID=""
+
+# Auto-fallback (2026-08-10): oracle <=0.17.1 cannot descend ChatGPT's
+# "Advanced" picker submenu where the Pro tier now lives. When the failure is
+# exactly that, retry once with the profile's current model and say so — an
+# answer from the wrong tier silently labeled Pro would be worse than the
+# failure.
+if [ "$ORACLE_STATUS" -ne 0 ] \
+  && grep -Eq "Unable to find model option|Unable to locate the ChatGPT model selector" "$ORACLE_LOG"; then
+  echo "oracle-bg: model picker could not reach '$MODEL' (ChatGPT Advanced-submenu regression); retrying with the profile's CURRENT model. The answer below is NOT guaranteed Pro-tier — the run log footer names the model that actually answered." >&2
+  SLUG="$(printf '%s' "$SLUG" | cut -d- -f1-4)-retry"
+  SALVAGE_OUT="${TMPDIR:-/tmp}/oracle-bg-${SLUG}-answer.md"
+  run_oracle current
+  ORACLE_STATUS=$?
+fi
+
 if [ "$ORACLE_STATUS" -ne 0 ]; then
   # Last chance: if oracle failed after the answer landed (confirm-refusal /
   # timeout), the page still has it.

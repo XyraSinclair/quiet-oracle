@@ -97,9 +97,24 @@ NON-Pro effort — not what "consult the oracle" means. Picker labels are
 screen-scrape strings, not stable identifiers; verify against the live
 picker when in doubt.
 
-**Version pin:** the recipe and the bug notes above are verified against
-oracle 0.16.x. If a newer release breaks the launcher, pin
-`ORACLE_BG_PKG=@steipete/oracle@0.16.1`.
+**Advanced-submenu regression + auto-fallback (verified 2026-08-10):**
+ChatGPT moved the effort tiers into an "Advanced" picker submenu that oracle
+≤0.17.1 cannot descend — `--model "Pro"` fails fast with "Unable to find
+model option matching 'Pro' … Available: Advanced, Model …, Effort Medium".
+Separately, 0.17.0's composer send is broken ("Prompt did not appear in
+conversation before timeout"); 0.17.1 sends correctly. The launcher
+therefore pins `@steipete/oracle@0.17.1`, tries Pro first, and on the picker
+error automatically retries once with `--browser-model-strategy current`
+(the profile's active model), disclosing loudly that the answer is not
+guaranteed Pro-tier — the run-log footer names the model that actually
+answered. Pro restoration paths: an oracle release that descends the
+Advanced submenu, or the user setting their ChatGPT default model to Pro
+once in their real browser (then `current` IS Pro). Always report which
+model actually answered.
+
+**Version pin:** the recipe is verified against oracle 0.17.1 (the
+launcher's default pin); the salvage/turn-count notes above date to 0.16.x.
+Override with `ORACLE_BG_PKG` to trial a newer release.
 
 WHY the manual flags fail: `--engine browser` alone launches a VISIBLE
 focus-stealing Chrome; `--browser-hide-window` still flashes on launch; and
@@ -131,8 +146,10 @@ as above):
       --timeout auto
 
 If the model picker fails ("Unable to locate the ChatGPT model selector
-button"), retry with `--browser-model-strategy current` (skip the picker;
-uses the profile's active model).
+button" or "Unable to find model option"), retry with
+`--browser-model-strategy current` (skip the picker; uses the profile's
+active model). The launcher does this retry automatically with disclosure;
+only manual runs need it by hand.
 
 Poll with `npx -y @steipete/oracle status --hours 72`; reattach with
 `npx -y @steipete/oracle session <slug>`. Pro runs can take 10–90 minutes; a
