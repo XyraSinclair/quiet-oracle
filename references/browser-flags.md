@@ -1,7 +1,7 @@
 # Oracle browser-mode flags
 
-Checked against `oracle --help` from `@steipete/oracle` v0.10–v0.16. Verify
-against your installed version when a flag misbehaves.
+Checked against `oracle --help` from `@steipete/oracle` v0.10–v0.17.1.
+Verify against your installed version when a flag misbehaves.
 
 ## Core flags
 
@@ -9,7 +9,7 @@ against your installed version when a flag misbehaves.
 - `--browser-hide-window`: mandatory on every direct browser launch. Omit only
   when using the bundled `scripts/oracle-bg.sh` or
   attaching via `--remote-chrome` so Oracle launches no browser.
-- `--model <model>`: Browser labels are screen-scrape strings. As of 2026-07 use `"Pro"` for the Pro effort tier (runs on the account's current model family). Never a combined family+Pro label (`"5.6 Sol Pro"`) — oracle ≤0.16.1 hard-rejects it. API-style names also work for some paths.
+- `--model <model>`: Browser labels are screen-scrape strings. As of 2026-07 use `"Pro"` for the Pro effort tier (runs on the account's current model family). Never a combined family+Pro label (`"5.6 Sol Pro"`) — oracle ≤0.16.1 hard-rejects it. API-style names also work for some paths. As of 2026-08, ChatGPT hides the effort tiers in an "Advanced" submenu that oracle ≤0.17.1 cannot descend — `"Pro"` fails fast; fall back to `--browser-model-strategy current` (the bundled launcher does this automatically, with disclosure).
 - `--chatgpt-url <url>`: Use the exact ChatGPT home/project/folder/workspace URL. This is the main way to keep consultations inside the intended browser context.
 - `--browser-cookie-path <path>`: Explicit Chrome/Chromium cookie DB path for session reuse when default discovery fails.
 - `--remote-chrome <host:port>`: Attach to an existing Chrome DevTools endpoint.
@@ -54,7 +54,7 @@ here — see upstream `--help`.
 ## Practical failure map
 
 - Login required: stop and ask the user to complete browser login; do not invent credentials.
-- Model not visible: try `--browser-model-strategy current` after the user manually selects the model.
+- Model not visible / "Unable to find model option": try `--browser-model-strategy current` (uses the profile's active model; say which model answered). To make `current` be Pro, set the ChatGPT default model to Pro once in the real browser.
 - Upload stuck: retry with `--browser-inline-files` for small/medium bundles or `--browser-bundle-files` for many files.
 - Browser automation blocked: use `--render --copy-markdown` and give paste instructions.
 - Duplicate run: reattach with `oracle session <slug>`; do not spawn a second browser tab unless forced.

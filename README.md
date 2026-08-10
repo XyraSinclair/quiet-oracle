@@ -38,7 +38,10 @@ working, and collects the answer when it lands. You never see a window.
    every other cookie is deleted before launch (see the Google-logout
    footgun).
 4. Attach `oracle --engine browser --remote-chrome 127.0.0.1:9222`. Oracle
-   launches no browser of its own, so nothing can flash or take focus.
+   launches no browser of its own, so nothing can flash or take focus. The
+   launcher asks for the Pro tier first and, if the picker cannot reach it
+   (see the Advanced-submenu regression below), retries once with the
+   profile's current model — telling you which model actually answered.
 5. A salvage watchdog polls the page over CDP. If the answer is finished
    (action bar up, no stop button, text stable for 90 s) while oracle's own
    completion detector spins, the watchdog scrapes the answer directly,
@@ -111,6 +114,19 @@ an effort tier, not a model name. Ask for `--model "Pro"` and you get the
 account's current family at Pro effort. oracle ≤0.16.1 hard-rejects
 combined labels like "5.6 Sol Pro", and a bare family label silently gets
 you a non-Pro tier.
+
+**The Advanced-submenu regression (2026-08).** ChatGPT moved the effort
+tiers into an "Advanced" submenu that oracle ≤0.17.1 cannot descend, so
+`--model "Pro"` now fails fast ("Unable to find model option matching
+'Pro' … Available: Advanced, Model …, Effort Medium"). Separately, 0.17.0
+broke the composer send ("Prompt did not appear in conversation before
+timeout"); 0.17.1 sends correctly. The launcher pins 0.17.1, tries Pro
+first, and on the picker error automatically retries once with
+`--browser-model-strategy current` (your profile's active model),
+disclosing loudly that the answer is not guaranteed Pro-tier — the run-log
+footer names the model that actually answered. To get Pro back today, set
+your ChatGPT default model to Pro once in your real browser; then
+`current` IS Pro.
 
 **The completion detector hang.** oracle ≤0.16.1 double-counts
 conversation turns against the current ChatGPT DOM, so it can wait forever
