@@ -38,6 +38,34 @@
 set -uo pipefail
 umask 077  # seeded cookies + answer files must never be world-readable
 
+# Master automation profile (fix 2026-08-10): seeding runs from the USER'S REAL
+# Chrome session steals a live token — ChatGPT rotates session tokens on use,
+# the rotation lands in the automation profile, and the user's real browser is
+# left holding a stale/invalidated session (observed: live ChatGPT degrades
+# until the user forces a fresh session by switching accounts and back). The
+# durable master profile quarantines this: the user signs into ChatGPT ONCE in
+# the automation-owned browser, and every run seeds from the master instead.
+# Master sessions rotate only against automation use; the user's real browser
+# is never touched. If the master session ever dies, rerun --setup-master.
+MASTER="${ORACLE_BG_MASTER:-$HOME/.local/state/oracle-bg/chrome-master}"
+
+if [ "${1:-}" = "--setup-master" ]; then
+  mkdir -p "$MASTER"
+  open -g -n -a "Google Chrome" --args \
+    --user-data-dir="$MASTER" --no-first-run --no-default-browser-check \
+    "https://chatgpt.com/" \
+    || { echo "oracle-bg: could not launch Google Chrome" >&2; exit 4; }
+  cat >&2 <<'SETUP_MSG'
+oracle-bg: a dedicated background Chrome is now running on the automation
+master profile (it will NOT steal focus). To finish setup, foreground it
+yourself (click its Dock icon or Cmd-Tab to the new Chrome instance), sign
+in to ChatGPT once in that window, then quit that Chrome instance. After
+that, oracle runs seed from this master profile and never touch the session
+in your daily browser again.
+SETUP_MSG
+  exit 0
+fi
+
 PROMPT_FILE="${1:?usage: oracle-bg.sh <prompt-file> [slug] [-- extra args]}"; shift
 # Default slug is 3 words: oracle 0.16.x rejects slugs under 3 hyphen-words.
 SLUG="oracle-background-consult"
@@ -135,20 +163,39 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 1. find the profile/cookie DB with the most chatgpt/openai cookies.
-best_db=""; best_n=0
-while IFS= read -r db; do
-  [ -f "$db" ] || continue
-  tmp="$(mktemp)"; sqlite3 "$db" ".backup '$tmp'" 2>/dev/null || { rm -f "$tmp"; continue; }
+# 1. pick the cookie source: the quarantined master profile when it has a
+# ChatGPT session, else (legacy, with a loud warning) the user's real Chrome.
+count_chatgpt_cookies() {  # db-file -> count (0 on any failure)
+  local db="$1" tmp n
+  [ -f "$db" ] || { echo 0; return; }
+  tmp="$(mktemp)"; sqlite3 "$db" ".backup '$tmp'" 2>/dev/null || { rm -f "$tmp"; echo 0; return; }
   n="$(sqlite3 "$tmp" "SELECT count(*) FROM cookies WHERE host_key LIKE '%chatgpt.com' OR host_key LIKE '%openai.com';" 2>/dev/null || echo 0)"
-  rm -f "$tmp"
-  if [ "${n:-0}" -gt "$best_n" ]; then best_n="$n"; best_db="$db"; fi
-done < <(find "$CHROME_ROOT" -maxdepth 3 -name Cookies 2>/dev/null)
-if [ -z "$best_db" ] || [ "$best_n" -eq 0 ]; then
-  echo "oracle-bg: no ChatGPT cookies found under $CHROME_ROOT — sign into ChatGPT in Chrome first." >&2
-  exit 2
+  rm -f "$tmp"; echo "${n:-0}"
+}
+best_db=""; best_n=0
+master_n="$(count_chatgpt_cookies "$MASTER/Default/Cookies")"
+if [ "$master_n" -gt 0 ]; then
+  best_db="$MASTER/Default/Cookies"; best_n="$master_n"
+  echo "oracle-bg: using MASTER automation profile cookies ($best_n chatgpt/openai cookies; user's live session untouched)" >&2
+else
+  while IFS= read -r db; do
+    n="$(count_chatgpt_cookies "$db")"
+    if [ "${n:-0}" -gt "$best_n" ]; then best_n="$n"; best_db="$db"; fi
+  done < <(find "$CHROME_ROOT" -maxdepth 3 -name Cookies 2>/dev/null)
+  if [ -z "$best_db" ] || [ "$best_n" -eq 0 ]; then
+    echo "oracle-bg: no ChatGPT cookies found under $CHROME_ROOT — sign into ChatGPT in Chrome first." >&2
+    exit 2
+  fi
+  cat >&2 <<LEGACY_WARN
+oracle-bg: WARNING: seeding from the user's REAL Chrome session ($best_db).
+ChatGPT rotates session tokens on use, so this run can invalidate the session
+in the user's live browser (observed 2026-08-10: live ChatGPT degraded until
+the user switched accounts and back). One-time fix:
+  $0 --setup-master
+then sign in once in the background automation Chrome it launches.
+LEGACY_WARN
+  echo "oracle-bg: using cookies from: $best_db ($best_n chatgpt/openai cookies)" >&2
 fi
-echo "oracle-bg: using cookies from: $best_db ($best_n chatgpt/openai cookies)" >&2
 
 # 2. reclaim any stale dedicated Chrome from a prior run on this profile,
 # then require a FREE CDP port: attaching to a foreign debugger would drive

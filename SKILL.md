@@ -59,6 +59,20 @@ sessions and logs the user out of every Google account in their REAL Chrome
 (observed 2026-07, repeated mass logouts correlated 1:1 with runs). The
 launcher copies only `chatgpt.com` and `openai.com` cookies. Never widen it.
 
+**Master automation profile (fix 2026-08):** seeding runs from the user's
+real Chrome session steals a live token — ChatGPT rotates session tokens on
+use, the rotation lands in the automation profile, and the user's live
+browser is left holding a stale session (observed: their ChatGPT degrades
+until they force a fresh session). The launcher now prefers a durable
+automation-owned profile at `~/.local/state/oracle-bg/chrome-master`
+(override `ORACLE_BG_MASTER`): runs seed cookies from it, never from the
+real Chrome, once it holds a ChatGPT session. One-time setup:
+`oracle-bg.sh --setup-master` launches a background Chrome on the master
+profile; the user foregrounds it, signs into ChatGPT once, and quits it.
+Until then the launcher falls back to the legacy real-Chrome path with a
+loud warning. Automation consults still share the signed-in account's usage
+limits — no profile arrangement changes that.
+
 **Concurrency and Cloudflare (measured 2026-07; launcher fixed 2026-08):**
 the launcher derives a per-run port (9300–9899, slug-hashed, scanned free)
 and per-run profile (`oracle-bg-chrome-<slug>`) by default. Shared defaults
