@@ -15,8 +15,11 @@
 #
 # Usage:
 #   oracle-bg.sh <prompt-file> [slug] [-- extra oracle args...]
-# Env overrides: ORACLE_BG_PORT (9222), ORACLE_BG_MODEL ("Pro"),
-#   ORACLE_BG_PROFILE ($TMPDIR/oracle-bg-chrome), ORACLE_CHATGPT_URL,
+#   oracle-bg.sh --setup-master     # one-time master-profile login flow
+# Env overrides: ORACLE_BG_PORT (default: slug-derived 9300-9899, scanned
+#   free), ORACLE_BG_PROFILE (default: $TMPDIR/oracle-bg-chrome-<slug>),
+#   ORACLE_BG_MASTER (~/.local/state/oracle-bg/chrome-master),
+#   ORACLE_BG_MODEL ("Pro"), ORACLE_CHATGPT_URL,
 #   ORACLE_BG_PKG (default @steipete/oracle@0.17.1 — exact pin, see below).
 #
 # Model default "Pro" (verified 2026-07): the ChatGPT picker is two-axis —
