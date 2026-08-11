@@ -69,9 +69,11 @@ automation-owned profile at `~/.local/state/oracle-bg/chrome-master`
 real Chrome, once it holds a ChatGPT session. One-time setup:
 `oracle-bg.sh --setup-master` launches a background Chrome on the master
 profile; the user foregrounds it, signs into ChatGPT once, and quits it.
-Until then the launcher falls back to the legacy real-Chrome path with a
-loud warning. Automation consults still share the signed-in account's usage
-limits — no profile arrangement changes that.
+Until the master holds a signed-in session the launcher REFUSES to run
+(exit 2) — the legacy real-Chrome path is opt-in only via
+`ORACLE_BG_ALLOW_LEGACY_SEED=1` and steals the user's live session; never
+set it without the user's explicit say-so. Automation consults still share
+the signed-in account's usage limits — no profile arrangement changes that.
 
 **Concurrency and Cloudflare (measured 2026-07; launcher fixed 2026-08):**
 the launcher derives a per-run port (9300–9899, slug-hashed, scanned free)
