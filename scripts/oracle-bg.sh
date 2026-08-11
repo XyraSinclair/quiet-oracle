@@ -54,6 +54,20 @@ MASTER="${ORACLE_BG_MASTER:-$HOME/.local/state/oracle-bg/chrome-master}"
 
 if [ "${1:-}" = "--setup-master" ]; then
   mkdir -p "$MASTER"
+  # Singleton guard: if a Chrome already holds this profile, a second `open`
+  # FORWARDS the request to the running instance, which RAISES its window
+  # over the user's work (observed 2026-08-10 16:19 — a setup-master re-run
+  # popped the logged-out master window mid-session). Never relaunch.
+  master_running=0
+  while IFS= read -r cmd; do
+    case "$cmd" in
+      *"--user-data-dir=$MASTER "*|*"--user-data-dir=$MASTER") master_running=1 ;;
+    esac
+  done < <(ps -axo command=)
+  if [ "$master_running" = 1 ]; then
+    echo "oracle-bg: master Chrome is ALREADY RUNNING on $MASTER — not relaunching (a second open would raise its window over the user's work). Cmd-Tab to that Chrome, sign into ChatGPT there, then quit it." >&2
+    exit 0
+  fi
   open -g -n -a "Google Chrome" --args \
     --user-data-dir="$MASTER" --no-first-run --no-default-browser-check \
     "https://chatgpt.com/" \
@@ -166,8 +180,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 1. pick the cookie source: the quarantined master profile when it has a
-# ChatGPT session, else (legacy, with a loud warning) the user's real Chrome.
+# 1. pick the cookie source: the quarantined master profile, which must hold
+# a SIGNED-IN ChatGPT session (an actual __Secure-next-auth.session-token —
+# anonymous visit cookies do not count; a logged-out master previously passed
+# the >0-cookies test and every run died at the login wall, 5x 2026-08-10).
+# Seeding from the user's real Chrome is the documented session-stealer
+# (token rotation lands in the automation profile and the user's live
+# browser errors until they re-login — observed twice 2026-08-10), so it is
+# NEVER automatic anymore: ORACLE_BG_ALLOW_LEGACY_SEED=1 is the only way in.
 count_chatgpt_cookies() {  # db-file -> count (0 on any failure)
   local db="$1" tmp n
   [ -f "$db" ] || { echo 0; return; }
@@ -175,12 +195,20 @@ count_chatgpt_cookies() {  # db-file -> count (0 on any failure)
   n="$(sqlite3 "$tmp" "SELECT count(*) FROM cookies WHERE host_key LIKE '%chatgpt.com' OR host_key LIKE '%openai.com';" 2>/dev/null || echo 0)"
   rm -f "$tmp"; echo "${n:-0}"
 }
+count_session_tokens() {  # db-file -> count of signed-in session-token cookies
+  local db="$1" tmp n
+  [ -f "$db" ] || { echo 0; return; }
+  tmp="$(mktemp)"; sqlite3 "$db" ".backup '$tmp'" 2>/dev/null || { rm -f "$tmp"; echo 0; return; }
+  n="$(sqlite3 "$tmp" "SELECT count(*) FROM cookies WHERE host_key LIKE '%chatgpt.com' AND name LIKE '__Secure-next-auth.session-token%';" 2>/dev/null || echo 0)"
+  rm -f "$tmp"; echo "${n:-0}"
+}
 best_db=""; best_n=0
-master_n="$(count_chatgpt_cookies "$MASTER/Default/Cookies")"
-if [ "$master_n" -gt 0 ]; then
-  best_db="$MASTER/Default/Cookies"; best_n="$master_n"
-  echo "oracle-bg: using MASTER automation profile cookies ($best_n chatgpt/openai cookies; user's live session untouched)" >&2
-else
+master_s="$(count_session_tokens "$MASTER/Default/Cookies")"
+if [ "$master_s" -gt 0 ]; then
+  best_db="$MASTER/Default/Cookies"
+  best_n="$(count_chatgpt_cookies "$best_db")"
+  echo "oracle-bg: using MASTER automation profile cookies ($best_n chatgpt/openai cookies, signed in; user's live session untouched)" >&2
+elif [ "${ORACLE_BG_ALLOW_LEGACY_SEED:-0}" = 1 ]; then
   while IFS= read -r db; do
     n="$(count_chatgpt_cookies "$db")"
     if [ "${n:-0}" -gt "$best_n" ]; then best_n="$n"; best_db="$db"; fi
@@ -190,14 +218,27 @@ else
     exit 2
   fi
   cat >&2 <<LEGACY_WARN
-oracle-bg: WARNING: seeding from the user's REAL Chrome session ($best_db).
+oracle-bg: WARNING: ORACLE_BG_ALLOW_LEGACY_SEED=1 — seeding from the user's
+REAL Chrome session ($best_db).
 ChatGPT rotates session tokens on use, so this run can invalidate the session
-in the user's live browser (observed 2026-08-10: live ChatGPT degraded until
-the user switched accounts and back). One-time fix:
+in the user's live browser (observed twice 2026-08-10: live ChatGPT errored
+until the user re-logged-in). Prefer the master profile:
   $0 --setup-master
 then sign in once in the background automation Chrome it launches.
 LEGACY_WARN
   echo "oracle-bg: using cookies from: $best_db ($best_n chatgpt/openai cookies)" >&2
+else
+  cat >&2 <<'NO_MASTER'
+oracle-bg: REFUSING to run — the master automation profile has no signed-in
+ChatGPT session, and seeding from the user's real Chrome is disabled (it
+steals the live session token; the user's browser then errors until they
+re-login — observed twice 2026-08-10). Fix once:
+  oracle-bg.sh --setup-master
+then sign into ChatGPT in the background Chrome it launches, and quit it.
+Escape hatch (dangerous, degrades the user's live ChatGPT):
+  ORACLE_BG_ALLOW_LEGACY_SEED=1 oracle-bg.sh ...
+NO_MASTER
+  exit 2
 fi
 
 # 2. reclaim any stale dedicated Chrome from a prior run on this profile,
