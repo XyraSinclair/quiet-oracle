@@ -11,11 +11,20 @@
 #      the Cloudflare clearance stays bound to one stable fingerprint. One
 #      run at a time (mkdir lock); concurrent runs fall back to seeded copies.
 #   2. launches that Chrome in the background via `open -g` (never activates,
-#      never touches the user's main Chrome — separate profile),
+#      never touches the user's main Chrome — separate profile) and keeps its
+#      windows MINIMIZED for the whole run via oracle-hide-window.mjs — `open
+#      -g` prevents focus steal but the window was still visible on the
+#      desktop, and macOS clamps --window-position so offscreen launch is
+#      impossible (measured 2026-08-12); CDP minimize is truly invisible and
+#      pages still stream/evaluate while minimized (verified),
 #   3. (seeded fallback only) copies ONLY the ChatGPT/OpenAI cookies from the
 #      master (WAL-safe sqlite .backup) into a per-run profile,
-#   4. attaches oracle via --remote-chrome (oracle launches nothing => no flash),
-#   5. on exit quits the dedicated Chrome; deletes per-run seeded profiles,
+#   4. pins the account's effort tier to Pro via oracle-pick-effort.mjs
+#      (ChatGPT's Advanced-submenu picker that oracle <=1.3.0 cannot descend;
+#      the choice persists server-side) and runs oracle with the CURRENT
+#      model — which is then Pro-tier by construction,
+#   5. attaches oracle via --remote-chrome (oracle launches nothing => no flash),
+#   6. on exit quits the dedicated Chrome; deletes per-run seeded profiles,
 #      NEVER the master.
 #
 # Usage:
@@ -147,6 +156,10 @@ CHROME_ROOT="$HOME/Library/Application Support/Google/Chrome"
 
 SCRAPER="$(cd "$(dirname "$0")" && pwd)/oracle-scrape.mjs"
 [ -f "$SCRAPER" ] || echo "oracle-bg: WARNING: salvage scraper not found at $SCRAPER (symlinked install?) — completion salvage disabled" >&2
+HIDER="$(cd "$(dirname "$0")" && pwd)/oracle-hide-window.mjs"
+[ -f "$HIDER" ] || echo "oracle-bg: WARNING: window hider not found at $HIDER — the dedicated Chrome window will be visible (background, never focused)" >&2
+PICKER="$(cd "$(dirname "$0")" && pwd)/oracle-pick-effort.mjs"
+[ -f "$PICKER" ] || echo "oracle-bg: WARNING: effort picker not found at $PICKER — Pro selection falls back to oracle's own (currently broken) picker" >&2
 SALVAGE_OUT="${TMPDIR:-/tmp}/oracle-bg-${SLUG}-answer.md"
 
 # Match ONLY Chrome processes on OUR exact profile dir — exact string with a
@@ -181,10 +194,12 @@ wait_profile_chrome_dead() {
 
 LAUNCHED=0
 ORACLE_PID=""
+HIDE_PID=""
 cleanup() {
   if [ -n "$ORACLE_PID" ]; then
     pkill -TERM -P "$ORACLE_PID" 2>/dev/null; kill -TERM "$ORACLE_PID" 2>/dev/null
   fi
+  [ -n "$HIDE_PID" ] && kill -TERM "$HIDE_PID" 2>/dev/null
   # Direct mode releases the singleton lock; the MASTER profile itself is
   # NEVER deleted (it holds the durable signed-in session + CF clearance).
   if [ "${DIRECT:-0}" = 1 ]; then
@@ -332,13 +347,25 @@ if [ "$DIRECT" = 0 ]; then
     "DELETE FROM cookies WHERE host_key NOT LIKE '%chatgpt.com' AND host_key NOT LIKE '%openai.com'; VACUUM;" \
     || { echo "oracle-bg: cookie filter failed" >&2; exit 3; }
 fi
+# Window invisibility (2026-08-12): spawn small at the clamped bottom-right
+# corner (macOS clamps 20000,20000 back onscreen — fully offscreen launch is
+# impossible), disable hidden-page throttling so ChatGPT streams normally
+# while minimized, then keep every window minimized via the hider watchdog
+# (Target.createTarget DE-minimizes, so a one-shot minimize is not enough).
 open -g -n -a "Google Chrome" --args \
   --remote-debugging-port="$PORT" --user-data-dir="$PROFILE" \
   --no-first-run --no-default-browser-check \
+  --window-position=20000,20000 --window-size=900,700 \
+  --disable-backgrounding-occluded-windows --disable-renderer-backgrounding \
+  --disable-background-timer-throttling \
   || { echo "oracle-bg: could not launch Google Chrome (is it installed?)" >&2; exit 4; }
 LAUNCHED=1
 for _ in $(seq 1 30); do curl -s "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1 && break; sleep 1; done
 curl -s "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1 || { echo "oracle-bg: debug port $PORT never came up" >&2; exit 4; }
+if [ -f "$HIDER" ]; then
+  node "$HIDER" --port "$PORT" 2>/dev/null &
+  HIDE_PID=$!
+fi
 
 # 4. attach oracle to the authenticated background Chrome.
 # Oracle runs in the background with a salvage watchdog: oracle <=0.16.1
@@ -396,21 +423,44 @@ run_oracle() {
   return "$st"
 }
 
-run_oracle select
-ORACLE_STATUS=$?
+# Effort pinning (2026-08-12): ChatGPT moved effort tiers into a submenu of
+# the composer pill that oracle <=1.3.0 cannot descend, so its own picker can
+# no longer reach Pro. oracle-pick-effort.mjs descends it over CDP (trusted
+# keyboard input; works minimized) and the selection persists SERVER-SIDE per
+# account — after one success, the profile's current model IS Pro-tier. So:
+# pin first, then run oracle with the current-model strategy (skipping its
+# broken picker). If pinning fails, fall back to the old select->current
+# chain with loud disclosure.
+PINNED=0
+if [ -f "$PICKER" ] && [ "$MODEL" = "Pro" ]; then
+  if node "$PICKER" --port "$PORT" --tier Pro >&2; then
+    PINNED=1
+    echo "oracle-bg: effort tier pinned to Pro via the picker script; running oracle on the current model (= Pro-tier by construction)." >&2
+  else
+    echo "oracle-bg: effort pinning failed (see above); falling back to oracle's own picker." >&2
+  fi
+fi
 
-# Auto-fallback (2026-08-10): oracle <=0.17.1 cannot descend ChatGPT's
-# "Advanced" picker submenu where the Pro tier now lives. When the failure is
-# exactly that, retry once with the profile's current model and say so — an
-# answer from the wrong tier silently labeled Pro would be worse than the
-# failure.
-if [ "$ORACLE_STATUS" -ne 0 ] \
-  && grep -Eq "Unable to find model option|Unable to locate the ChatGPT model selector" "$ORACLE_LOG"; then
-  echo "oracle-bg: model picker could not reach '$MODEL' (ChatGPT Advanced-submenu regression); retrying with the profile's CURRENT model. The answer below is NOT guaranteed Pro-tier — the run log footer names the model that actually answered." >&2
-  SLUG="$(printf '%s' "$SLUG" | cut -d- -f1-4)-retry"
-  SALVAGE_OUT="${TMPDIR:-/tmp}/oracle-bg-${SLUG}-answer.md"
+if [ "$PINNED" = 1 ]; then
   run_oracle current
   ORACLE_STATUS=$?
+else
+  run_oracle select
+  ORACLE_STATUS=$?
+
+  # Auto-fallback (2026-08-10): oracle <=0.17.1 cannot descend ChatGPT's
+  # "Advanced" picker submenu where the Pro tier now lives. When the failure is
+  # exactly that, retry once with the profile's current model and say so — an
+  # answer from the wrong tier silently labeled Pro would be worse than the
+  # failure.
+  if [ "$ORACLE_STATUS" -ne 0 ] \
+    && grep -Eq "Unable to find model option|Unable to locate the ChatGPT model selector" "$ORACLE_LOG"; then
+    echo "oracle-bg: model picker could not reach '$MODEL' (ChatGPT Advanced-submenu regression); retrying with the profile's CURRENT model. The answer below is NOT guaranteed Pro-tier — the run log footer names the model that actually answered." >&2
+    SLUG="$(printf '%s' "$SLUG" | cut -d- -f1-4)-retry"
+    SALVAGE_OUT="${TMPDIR:-/tmp}/oracle-bg-${SLUG}-answer.md"
+    run_oracle current
+    ORACLE_STATUS=$?
+  fi
 fi
 
 if [ "$ORACLE_STATUS" -ne 0 ]; then

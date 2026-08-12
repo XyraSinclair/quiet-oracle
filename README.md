@@ -28,25 +28,35 @@ working, and collects the answer when it lands. You never see a window.
 
 ## How it works
 
-1. Find the Chrome profile that is actually signed into ChatGPT: back up
-   each profile's cookie database (WAL-safe `sqlite3 .backup`) and count
-   `chatgpt.com`/`openai.com` cookies. Highest count wins.
-2. Launch a **dedicated** throwaway Chrome with `open -g` (macOS: open in
-   background, no activation) on its own `--user-data-dir` and CDP debug
-   port. Your real Chrome is never touched.
-3. Seed the throwaway profile with the ChatGPT/OpenAI cookies **only** —
-   every other cookie is deleted before launch (see the Google-logout
-   footgun).
-4. Attach `oracle --engine browser --remote-chrome 127.0.0.1:9222`. Oracle
-   launches no browser of its own, so nothing can flash or take focus. The
-   launcher asks for the Pro tier first and, if the picker cannot reach it
-   (see the Advanced-submenu regression below), retries once with the
-   profile's current model — telling you which model actually answered.
+1. **One-time setup**: `oracle-bg.sh --setup-master` launches a dedicated
+   background Chrome on a persistent automation-owned profile
+   (`~/.local/state/oracle-bg/chrome-master`). You sign into ChatGPT there
+   once and quit it. Your real Chrome is never read (the old
+   cookie-copy-from-real-Chrome path still exists but is an explicit,
+   warned opt-in — see the token-rotation footgun).
+2. Each run attaches **directly to the master profile in place** (one run
+   at a time via a lock; a concurrent run falls back to a per-run copy
+   seeded from the master). Running in place keeps ChatGPT's session-token
+   rotation coherent — the jar that owns the token receives the rotation —
+   so the session survives indefinitely, and the Cloudflare clearance
+   stays bound to one stable browser fingerprint.
+3. The Chrome launches with `open -g` (background, no activation) and its
+   windows are kept **minimized** for the whole run by a small CDP
+   watchdog (`scripts/oracle-hide-window.mjs`) — so it is not merely
+   unfocused but invisible.
+4. The launcher pins the account's effort tier to **Pro** over CDP
+   (`scripts/oracle-pick-effort.mjs` descends the picker submenu that the
+   oracle CLI currently cannot; the choice persists server-side), then
+   attaches `oracle --engine browser --remote-chrome 127.0.0.1:<port>
+   --browser-model-strategy current` — the current model is Pro-tier by
+   construction. Oracle launches no browser of its own, so nothing can
+   flash or take focus.
 5. A salvage watchdog polls the page over CDP. If the answer is finished
    (action bar up, no stop button, text stable for 90 s) while oracle's own
    completion detector spins, the watchdog scrapes the answer directly,
    prints it, and ends the run cleanly.
-6. On exit the throwaway Chrome is killed and the seeded profile deleted.
+6. On exit the dedicated Chrome is quit; per-run seeded profiles are
+   deleted, the master profile never is.
 
 ## Install
 
@@ -68,22 +78,26 @@ Write the prompt file first. Slugs must be 3–5 hyphen-separated words.
 
 - macOS (the launcher uses `open -g` and the macOS Chrome profile paths).
   A Linux port needs an equivalent no-activation launch; PRs welcome.
-- Google Chrome, signed into chatgpt.com with a Pro plan. (Plus works
-  mechanically, but you don't get the Pro tier this repo exists for.)
+- Google Chrome, plus a ChatGPT Pro plan signed into the master profile
+  once via `--setup-master`. (Plus works mechanically, but you don't get
+  the Pro tier this repo exists for.)
 - Node ≥ 22 (`npx` fetches `@steipete/oracle`; the scraper is
   dependency-free).
 - `sqlite3` (ships with macOS).
 
 ## What it touches, honestly
 
-The launcher reads your Chrome cookie database locally and copies only the
-`chatgpt.com` and `openai.com` rows into a temporary profile on the same
-machine. Nothing is sent anywhere except to ChatGPT itself, as your own
-signed-in session. The temporary profile is deleted on exit. One known
-exposure: the prompt text is passed to the oracle CLI on its command line,
-so other local users can see it in the process list during the run. You
-are automating your own account through your own browser; read your plan's
-terms and make your own call.
+The default path never reads your real Chrome at all: the session lives in
+a dedicated automation profile you signed into once. Concurrent runs copy
+only the `chatgpt.com`/`openai.com` cookie rows from that master profile
+into a temporary per-run profile on the same machine; the legacy
+copy-from-your-real-Chrome path is a warned, explicit opt-in
+(`ORACLE_BG_ALLOW_LEGACY_SEED=1`). Nothing is sent anywhere except to
+ChatGPT itself, as your own signed-in session. Temporary profiles are
+deleted on exit. One known exposure: the prompt text is passed to the
+oracle CLI on its command line, so other local users can see it in the
+process list during the run. You are automating your own account through
+your own browser; read your plan's terms and make your own call.
 
 ## The footgun map
 
@@ -115,18 +129,31 @@ account's current family at Pro effort. oracle ≤0.16.1 hard-rejects
 combined labels like "5.6 Sol Pro", and a bare family label silently gets
 you a non-Pro tier.
 
-**The Advanced-submenu regression (2026-08).** ChatGPT moved the effort
-tiers into an "Advanced" submenu that oracle ≤0.17.1 cannot descend, so
-`--model "Pro"` now fails fast ("Unable to find model option matching
-'Pro' … Available: Advanced, Model …, Effort Medium"). Separately, 0.17.0
-broke the composer send ("Prompt did not appear in conversation before
-timeout"); 0.17.1 sends correctly. The launcher pins 0.17.1, tries Pro
-first, and on the picker error automatically retries once with
-`--browser-model-strategy current` (your profile's active model),
-disclosing loudly that the answer is not guaranteed Pro-tier — the run-log
-footer names the model that actually answered. To get Pro back today, set
-your ChatGPT default model to Pro once in your real browser; then
-`current` IS Pro.
+**The effort-submenu regression, and its fix (2026-08).** ChatGPT moved
+the effort tiers into a submenu of the composer pill that oracle ≤1.3.0
+cannot descend, so `--model "Pro"` fails fast ("Unable to find model
+option matching 'Pro' … Available: Advanced, Model …, Effort …"). The
+launcher now pins the tier itself: `scripts/oracle-pick-effort.mjs`
+descends the submenu over CDP (one trusted click on the pill, then pure
+keyboard: ArrowDown to the Effort row, ArrowRight into the
+Instant/Medium/High/Extra High/Pro radios, Enter on Pro) and verifies the
+pill label. The choice persists server-side on your account, so the
+launcher then simply runs oracle with `--browser-model-strategy current`
+— which is Pro-tier by construction. If pinning fails, it falls back to
+the old try-Pro-then-current chain and says loudly that the answer is not
+guaranteed Pro-tier. Separately, 0.17.0 broke the composer send; the
+launcher pins 0.17.1, which sends correctly.
+
+**Minimized windows break the send.** The obvious way to hide the
+dedicated Chrome — minimize it — stops Chrome's frame production, ChatGPT
+never commits the optimistic prompt render, and oracle times out with
+"Prompt did not appear in conversation". And macOS clamps window
+positions, so you cannot launch or move a window fully offscreen either
+(CDP `Browser.setWindowBounds` clamps to a 40×41 px corner sliver — we
+measured). `scripts/oracle-hide-window.mjs` therefore parks the run's
+windows in that clamped bottom-right sliver for the whole run —
+rendering stays live, and at most a 40 px corner crumb is on screen,
+never raised, freely covered by your own windows.
 
 **The completion detector hang.** oracle ≤0.16.1 double-counts
 conversation turns against the current ChatGPT DOM, so it can wait forever

@@ -120,20 +120,36 @@ NON-Pro effort — not what "consult the oracle" means. Picker labels are
 screen-scrape strings, not stable identifiers; verify against the live
 picker when in doubt.
 
-**Advanced-submenu regression + auto-fallback (verified 2026-08-10):**
-ChatGPT moved the effort tiers into an "Advanced" picker submenu that oracle
-≤0.17.1 cannot descend — `--model "Pro"` fails fast with "Unable to find
-model option matching 'Pro' … Available: Advanced, Model …, Effort Medium".
-Separately, 0.17.0's composer send is broken ("Prompt did not appear in
-conversation before timeout"); 0.17.1 sends correctly. The launcher
-therefore pins `@steipete/oracle@0.17.1`, tries Pro first, and on the picker
-error automatically retries once with `--browser-model-strategy current`
-(the profile's active model), disclosing loudly that the answer is not
-guaranteed Pro-tier — the run-log footer names the model that actually
-answered. Pro restoration paths: an oracle release that descends the
-Advanced submenu, or the user setting their ChatGPT default model to Pro
-once in their real browser (then `current` IS Pro). Always report which
-model actually answered.
+**Pro restored via effort pinning (2026-08-12):** ChatGPT moved the effort
+tiers into a submenu of the composer pill that oracle ≤1.3.0 cannot descend
+— `--model "Pro"` fails fast with "Unable to find model option matching
+'Pro' … Available: Advanced, Model …, Effort …". The launcher now fixes
+this itself: `scripts/oracle-pick-effort.mjs` opens the pill menu with one
+trusted CDP click, keyboard-descends the Effort submenu (ArrowDown to the
+`Effort` row, ArrowRight opens it onto Instant/Medium/High/Extra High/Pro
+radios, ArrowDown to the tier, Enter), verifies the pill label, and exits.
+The selection persists SERVER-SIDE per account, so after one success
+`--browser-model-strategy current` IS Pro — the launcher pins first and
+then runs oracle with `current`, skipping oracle's broken picker entirely
+(smoke-verified 2026-08-12: the answer self-reported Pro). If pinning
+fails it falls back to the old select→current chain, disclosing loudly
+that the answer is not guaranteed Pro-tier. Separately, 0.17.0's composer
+send is broken ("Prompt did not appear in conversation before timeout");
+0.17.1 sends correctly, hence the pin below. Always report which model
+actually answered.
+
+**Window invisibility (2026-08-12):** `open -g` never steals focus but the
+dedicated Chrome window was still VISIBLE on the desktop. macOS clamps
+window positions, so a fully offscreen launch is impossible (requesting
+20000,20000 clamps back onscreen; CDP `Browser.setWindowBounds` clamps to
+a 40×41 px bottom-right corner sliver). Minimizing is NOT safe: a
+minimized window stops BeginFrame, ChatGPT's UI never commits the prompt
+render, and oracle dies with "Prompt did not appear in conversation before
+timeout" (measured on an otherwise healthy run). The launcher therefore
+runs `scripts/oracle-hide-window.mjs` for the whole run: it parks every
+window of the run's Chrome in the clamped corner sliver (re-parking
+new/de-minimized windows within ~1 s, un-minimizing any it finds) — worst
+case on screen is a 40 px corner crumb that other windows freely cover.
 
 **Version pin:** the recipe is verified against oracle 0.17.1 (the
 launcher's default pin); the salvage/turn-count notes above date to 0.16.x.
