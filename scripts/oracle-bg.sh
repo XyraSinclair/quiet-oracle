@@ -82,8 +82,8 @@ oracle-bg: a dedicated background Chrome is now running on the automation
 master profile (it will NOT steal focus). To finish setup, foreground it
 yourself (click its Dock icon or Cmd-Tab to the new Chrome instance), sign
 in to ChatGPT once in that window, then quit that Chrome instance. After
-that, oracle runs seed from this master profile and never touch the session
-in your daily browser again.
+that, oracle runs attach to this master profile directly (rotation-coherent,
+one at a time) and never touch the session in your daily browser again.
 SETUP_MSG
   exit 0
 fi
