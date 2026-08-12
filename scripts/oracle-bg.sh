@@ -5,13 +5,18 @@
 # VISIBLE Chrome that takes focus, and its in-app cookie copy can fail to pick up
 # the real ChatGPT session (the "Unable to locate the ChatGPT model selector
 # button" error is usually an AUTH failure in disguise). This script instead:
-#   1. finds the Chrome profile actually signed into ChatGPT,
-#   2. launches a DEDICATED Chrome in the background via `open -g` (never
-#      activates, never touches the user's main Chrome — separate profile),
-#   3. seeds that profile with ONLY the ChatGPT/OpenAI cookies (WAL-safe
-#      sqlite .backup),
+#   1. runs DIRECTLY on the persistent master automation profile when it is
+#      signed in and free (default since 2026-08-11): token rotation lands in
+#      the jar that owns it, so the session stays coherent indefinitely, and
+#      the Cloudflare clearance stays bound to one stable fingerprint. One
+#      run at a time (mkdir lock); concurrent runs fall back to seeded copies.
+#   2. launches that Chrome in the background via `open -g` (never activates,
+#      never touches the user's main Chrome — separate profile),
+#   3. (seeded fallback only) copies ONLY the ChatGPT/OpenAI cookies from the
+#      master (WAL-safe sqlite .backup) into a per-run profile,
 #   4. attaches oracle via --remote-chrome (oracle launches nothing => no flash),
-#   5. cleans up the dedicated Chrome + seeded cookies on exit.
+#   5. on exit quits the dedicated Chrome; deletes per-run seeded profiles,
+#      NEVER the master.
 #
 # Usage:
 #   oracle-bg.sh <prompt-file> [slug] [-- extra oracle args...]
@@ -107,8 +112,8 @@ node -e 'process.exit(typeof WebSocket === "function" ? 0 : 1)' 2>/dev/null \
 # `open -g` only backgrounds the process it launches, not the forward target.
 # Shared defaults also made concurrent sessions mutually kill each other's
 # dedicated Chrome via the stale-reclaim logic ("Remote Chrome connection
-# lost" / "Prompt did not appear"). Deriving both from the slug removes the
-# whole class; env overrides still win.
+# lost" / "Prompt did not appear", observed 3x on 2026-08-10). Deriving both
+# from the slug removes the whole class; env overrides still win.
 derive_port() {  # slug -> deterministic port in 9300..9899, then scan upward to a free one
   local port; port=$((9300 + $(printf '%s' "$SLUG" | cksum | cut -d' ' -f1) % 600))
   local tries=0
@@ -127,9 +132,17 @@ PORT="${ORACLE_BG_PORT:-$(derive_port)}" || exit 4
 PROFILE="${ORACLE_BG_PROFILE:-${TMPDIR:-/tmp}/oracle-bg-chrome-$SLUG}"
 MODEL="${ORACLE_BG_MODEL:-Pro}"
 URL="${ORACLE_CHATGPT_URL:-https://chatgpt.com/}"
-# Exact pin: 0.17.1 fixes 0.17.0's broken composer send. Override with
-# ORACLE_BG_PKG if a newer release restores Pro picking.
+# Exact pin: 0.17.1 fixes 0.17.0's broken composer send. This machine's npm
+# runs a rolling now-7d publish cooldown (NPM_CONFIG_BEFORE, supply-chain
+# defense); an exact already-reviewed pin is outside that threat model
+# (fresh-publish attacks), so the install below bypasses the cooldown ONLY
+# when PKG carries an exact version. The cooldown admits 0.17.1 naturally
+# from 2026-08-13; the bypass then becomes a no-op.
 PKG="${ORACLE_BG_PKG:-@steipete/oracle@0.17.1}"
+case "$PKG" in
+  *oracle@[0-9]*) NPX_ENV=(NPM_CONFIG_BEFORE="2030-01-01T00:00:00Z") ;;
+  *) NPX_ENV=() ;;
+esac
 CHROME_ROOT="$HOME/Library/Application Support/Google/Chrome"
 
 SCRAPER="$(cd "$(dirname "$0")" && pwd)/oracle-scrape.mjs"
@@ -172,6 +185,16 @@ cleanup() {
   if [ -n "$ORACLE_PID" ]; then
     pkill -TERM -P "$ORACLE_PID" 2>/dev/null; kill -TERM "$ORACLE_PID" 2>/dev/null
   fi
+  # Direct mode releases the singleton lock; the MASTER profile itself is
+  # NEVER deleted (it holds the durable signed-in session + CF clearance).
+  if [ "${DIRECT:-0}" = 1 ]; then
+    if [ "$LAUNCHED" = 1 ]; then
+      kill_profile_chrome TERM
+      wait_profile_chrome_dead || { kill_profile_chrome KILL; sleep 1; }
+    fi
+    rm -rf "$LOCKDIR" 2>/dev/null
+    return 0
+  fi
   [ "$LAUNCHED" = 1 ] || return 0
   kill_profile_chrome TERM
   wait_profile_chrome_dead || { kill_profile_chrome KILL; sleep 1; }
@@ -203,11 +226,49 @@ count_session_tokens() {  # db-file -> count of signed-in session-token cookies
   rm -f "$tmp"; echo "${n:-0}"
 }
 best_db=""; best_n=0
+DIRECT=0
+LOCKDIR="$MASTER.lock"
 master_s="$(count_session_tokens "$MASTER/Default/Cookies")"
 if [ "$master_s" -gt 0 ]; then
-  best_db="$MASTER/Default/Cookies"
-  best_n="$(count_chatgpt_cookies "$best_db")"
-  echo "oracle-bg: using MASTER automation profile cookies ($best_n chatgpt/openai cookies, signed in; user's live session untouched)" >&2
+  # DIRECT-MASTER MODE (default since 2026-08-11): run oracle ON the master
+  # profile itself instead of seeding a per-run copy. Seeded copies re-created
+  # the rotation race one level down — ChatGPT rotates the session token
+  # against the RUN profile's jar while the master keeps the pre-rotation
+  # token, so the master session died every few runs and needed a re-login.
+  # Running in place keeps rotation coherent (the jar that owns the token
+  # receives the rotation) AND keeps the Cloudflare clearance bound to one
+  # stable browser fingerprint (fresh per-run profiles are what trip the
+  # "Just a moment…" challenge). Direct mode is a singleton: one run at a
+  # time holds the master; concurrent runs fall back to seeded copies.
+  master_busy=0
+  while IFS= read -r cmd; do
+    case "$cmd" in
+      *"--user-data-dir=$MASTER "*|*"--user-data-dir=$MASTER") master_busy=1 ;;
+    esac
+  done < <(ps -axo command=)
+  if [ "$master_busy" = 0 ] && mkdir "$LOCKDIR" 2>/dev/null; then
+    printf '%s\n' "$$" > "$LOCKDIR/pid"
+    DIRECT=1
+    PROFILE="$MASTER"
+    echo "oracle-bg: DIRECT master-profile mode (session rotation stays coherent; profile preserved on exit; user's live session untouched)" >&2
+  else
+    # Stale-lock reclaim: a dead PID means a crashed run left the lock.
+    if [ "$master_busy" = 0 ] && [ -f "$LOCKDIR/pid" ] && ! kill -0 "$(cat "$LOCKDIR/pid" 2>/dev/null)" 2>/dev/null; then
+      rm -rf "$LOCKDIR"
+      if mkdir "$LOCKDIR" 2>/dev/null; then
+        printf '%s\n' "$$" > "$LOCKDIR/pid"
+        DIRECT=1
+        PROFILE="$MASTER"
+        echo "oracle-bg: DIRECT master-profile mode (reclaimed stale lock from a dead run)" >&2
+      fi
+    fi
+    if [ "$DIRECT" = 0 ]; then
+      best_db="$MASTER/Default/Cookies"
+      best_n="$(count_chatgpt_cookies "$best_db")"
+      echo "oracle-bg: master profile is BUSY (another oracle run or an open master Chrome) — falling back to a SEEDED copy for this run. Note: heavy seeded use can rotate the master session out from under it; prefer serializing consults." >&2
+    fi
+  fi
+  [ "$DIRECT" = 1 ] || echo "oracle-bg: using MASTER automation profile cookies ($best_n chatgpt/openai cookies, signed in)" >&2
 elif [ "${ORACLE_BG_ALLOW_LEGACY_SEED:-0}" = 1 ]; then
   while IFS= read -r db; do
     n="$(count_chatgpt_cookies "$db")"
@@ -243,26 +304,34 @@ fi
 
 # 2. reclaim any stale dedicated Chrome from a prior run on this profile,
 # then require a FREE CDP port: attaching to a foreign debugger would drive
-# the wrong (possibly the user's real) browser.
-if kill_profile_chrome TERM; then
-  wait_profile_chrome_dead || { kill_profile_chrome KILL; sleep 1; }
+# the wrong (possibly the user's real) browser. In DIRECT mode the reclaim
+# is skipped — we only entered direct mode after verifying no Chrome holds
+# the master, and killing here could hit a login window the user just
+# opened in the race window.
+if [ "$DIRECT" = 0 ]; then
+  if kill_profile_chrome TERM; then
+    wait_profile_chrome_dead || { kill_profile_chrome KILL; sleep 1; }
+  fi
 fi
 if curl -s --max-time 2 "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1; then
   echo "oracle-bg: port $PORT already has a DevTools listener that is not ours — refusing to attach. Set ORACLE_BG_PORT to a free port." >&2
   exit 4
 fi
 
-# 3. seed cookies, launch backgrounded.
-mkdir -p "$PROFILE/Default"
-sqlite3 "$best_db" ".backup '$PROFILE/Default/Cookies'" || { echo "oracle-bg: cookie seed failed" >&2; exit 3; }
-# Seed ONLY chatgpt/openai cookies. Seeding the whole jar replays the user's
-# Google session cookies from an unregistered browser instance; Google's
-# cookie-theft detection then rotates/revokes the sessions and logs the user
-# out of every Google account in their REAL Chrome (observed 2026-07,
-# repeated mass logouts correlated 1:1 with runs). Never widen this.
-sqlite3 "$PROFILE/Default/Cookies" \
-  "DELETE FROM cookies WHERE host_key NOT LIKE '%chatgpt.com' AND host_key NOT LIKE '%openai.com'; VACUUM;" \
-  || { echo "oracle-bg: cookie filter failed" >&2; exit 3; }
+# 3. seed cookies (seeded mode only — direct mode runs on the master jar
+# in place), launch backgrounded.
+if [ "$DIRECT" = 0 ]; then
+  mkdir -p "$PROFILE/Default"
+  sqlite3 "$best_db" ".backup '$PROFILE/Default/Cookies'" || { echo "oracle-bg: cookie seed failed" >&2; exit 3; }
+  # Seed ONLY chatgpt/openai cookies. Seeding the whole jar replays the user's
+  # Google session cookies from an unregistered browser instance; Google's
+  # cookie-theft detection then rotates/revokes the sessions and logs the user
+  # out of every Google account in their REAL Chrome (observed 2026-07,
+  # repeated mass logouts correlated 1:1 with runs). Never widen this.
+  sqlite3 "$PROFILE/Default/Cookies" \
+    "DELETE FROM cookies WHERE host_key NOT LIKE '%chatgpt.com' AND host_key NOT LIKE '%openai.com'; VACUUM;" \
+    || { echo "oracle-bg: cookie filter failed" >&2; exit 3; }
+fi
 open -g -n -a "Google Chrome" --args \
   --remote-debugging-port="$PORT" --user-data-dir="$PROFILE" \
   --no-first-run --no-default-browser-check \
@@ -292,7 +361,7 @@ salvage() {
 run_oracle() {
   local strategy="$1" model_args=(--browser-model-strategy "$1")
   [ "$strategy" = "select" ] && model_args+=(--model "$MODEL")
-  npx -y "$PKG" \
+  env ${NPX_ENV[@]+"${NPX_ENV[@]}"} PKG_POLICY_BYPASS=1 npx -y "$PKG" \
     --engine browser \
     --remote-chrome "127.0.0.1:$PORT" \
     "${model_args[@]}" \
