@@ -88,6 +88,30 @@ fi
 # is never touched. If the master session ever dies, rerun --setup-master.
 MASTER="${ORACLE_BG_MASTER:-$HOME/.local/state/oracle-bg/chrome-master}"
 
+# FORBIDDEN-ACCOUNT GUARD (2026-08). Set ORACLE_BG_FORBIDDEN_ACCOUNT to a
+# marker for your daily identity (e.g. your email's local part). If it shows
+# up in the master profile's plaintext stores — autofill from a login form is
+# the proven trace — the profile is poisoned: someone signed the automation
+# profile into the daily account, and every consult would run on (and
+# server-side-invalidate) your real ChatGPT sessions. Refuse hard until the
+# profile is purged and --setup-master is redone with the dedicated account.
+FORBIDDEN_ACCOUNT="${ORACLE_BG_FORBIDDEN_ACCOUNT:-}"
+check_master_untainted() {
+  [ -n "$FORBIDDEN_ACCOUNT" ] || return 0
+  [ -d "$MASTER/Default" ] || return 0
+  local f
+  for f in "Web Data" "Login Data" "Preferences"; do
+    if [ -f "$MASTER/Default/$f" ] \
+       && LC_ALL=C grep -aq -- "$FORBIDDEN_ACCOUNT" "$MASTER/Default/$f"; then
+      echo "oracle-bg: REFUSING TO RUN — forbidden account marker '$FORBIDDEN_ACCOUNT' found in master profile ($f)." >&2
+      echo "oracle-bg: the master profile must hold ONLY the dedicated automation account, never your daily account. Purge the profile and re-run --setup-master signing in as the dedicated account." >&2
+      exit 2
+    fi
+  done
+  return 0
+}
+check_master_untainted
+
 if [ "${1:-}" = "--setup-master" ]; then
   mkdir -p "$MASTER"
   # Singleton guard: if a Chrome already holds this profile, a second `open`
