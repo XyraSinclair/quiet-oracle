@@ -75,16 +75,38 @@ Until the master holds a signed-in session the launcher REFUSES to run
 set it without the user's explicit say-so. Automation consults still share
 the signed-in account's usage limits — no profile arrangement changes that.
 
-**Same-account session-kill (observed 2026-08, unresolved):** even with a
-fully isolated master profile — zero local contact with the user's real
-cookie jar — automated consults were followed by the user's real browser
-being logged out of ChatGPT (every observed post-run visit over two days).
-The invalidation is server-side on the shared account: OpenAI appears to
-revoke the account's other sessions after automated use (the same account's
-Codex OAuth refresh token also died into permanent reauth-needed in the
-same window). No local profile arrangement can fix this. If the signed-in
-user's live ChatGPT session matters to them, run browser-mode consults on a
-DEDICATED ChatGPT account, not their daily-driver account.
+**Use a DEDICATED ChatGPT account — this is the big one.** Automated
+browser consults invalidate the ChatGPT account's *other* sessions
+server-side. Concretely: after a consult runs, any normal browser you have
+logged into that same ChatGPT account gets silently logged out. We observed
+this on every single post-run check across two days, and the same account's
+Codex OAuth refresh token died into a permanent "reauth needed" state in the
+same window.
+
+Two things make this trap especially nasty:
+
+1. **It is not a local cookie bug, so local fixes do not touch it.** We first
+   assumed the launcher was copying/stealing the live session token, and spent
+   a fix cycle isolating the automation into its own Chrome profile that never
+   reads the real cookie jar (see the "master automation profile" note above).
+   The logouts continued unchanged. The invalidation happens on OpenAI's
+   servers in response to the *account* being driven by automation — no
+   profile, cookie-filter, or window trick on your machine can prevent it.
+
+2. **Quiet gaps look like success.** You only notice the logout the next time
+   you personally open ChatGPT, which may be hours later, so it is easy to
+   conclude "the last fix worked" when really nobody looked. Confirm with the
+   browser's own history/session state, not with "it seemed fine."
+
+**The only reliable fix:** point the master automation profile at a ChatGPT
+account you use for *nothing else*. Sign that dedicated account in once via
+`--setup-master`; never sign your daily-driver account into the automation
+profile. The periodic session-kill still happens, but now it only logs out
+the throwaway account, which no human is ever sitting in. Automated consults
+also consume that account's usage limits, which is a second reason to keep it
+separate. If you share one account between your real browser and the
+automation, expect to be logged out regularly — that is inherent, not a bug
+you can patch here.
 
 **Concurrency and Cloudflare (measured 2026-07; launcher fixed 2026-08):**
 the launcher derives a per-run port (9300–9899, slug-hashed, scanned free)
