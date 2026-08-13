@@ -75,6 +75,17 @@ Until the master holds a signed-in session the launcher REFUSES to run
 set it without the user's explicit say-so. Automation consults still share
 the signed-in account's usage limits — no profile arrangement changes that.
 
+**Same-account session-kill (observed 2026-08, unresolved):** even with a
+fully isolated master profile — zero local contact with the user's real
+cookie jar — automated consults were followed by the user's real browser
+being logged out of ChatGPT (every observed post-run visit over two days).
+The invalidation is server-side on the shared account: OpenAI appears to
+revoke the account's other sessions after automated use (the same account's
+Codex OAuth refresh token also died into permanent reauth-needed in the
+same window). No local profile arrangement can fix this. If the signed-in
+user's live ChatGPT session matters to them, run browser-mode consults on a
+DEDICATED ChatGPT account, not their daily-driver account.
+
 **Concurrency and Cloudflare (measured 2026-07; launcher fixed 2026-08):**
 the launcher derives a per-run port (9300–9899, slug-hashed, scanned free)
 and per-run profile (`oracle-bg-chrome-<slug>`) by default. Shared defaults

@@ -55,6 +55,28 @@
 set -uo pipefail
 umask 077  # seeded cookies + answer files must never be world-readable
 
+# ── SAME-ACCOUNT SESSION-KILL GATE (2026-08): browser mode can log the user
+# out of ChatGPT in their real browser SERVER-SIDE even with a fully isolated
+# master profile (zero local contact with the real cookie jar). Observed:
+# every post-run visit to chatgpt.com over two days found the real session
+# dead; the same account's Codex OAuth refresh token died into permanent
+# reauth-needed in the same window. OpenAI appears to revoke the account's
+# other sessions after automated use — not fixable locally. Safe usage is a
+# DEDICATED ChatGPT account for the automation, not the user's daily driver.
+# Acknowledge the risk explicitly to run:
+if [ "${1:-}" != "--setup-master" ] && [ "${ORACLE_BG_ACCEPT_SESSION_KILL:-0}" != 1 ]; then
+  cat >&2 <<'SESSION_KILL_STOP'
+oracle-bg: REFUSING to run — automated browser consults on a shared ChatGPT
+account can invalidate the account's OTHER sessions server-side (the user's
+real browser gets logged out; observed repeatedly 2026-08 even in
+direct-master mode with zero local cookie contact). If the master profile is
+signed into a DEDICATED automation account — or the user accepts being
+logged out of their daily account — acknowledge explicitly:
+  ORACLE_BG_ACCEPT_SESSION_KILL=1 oracle-bg.sh ...
+SESSION_KILL_STOP
+  exit 2
+fi
+
 # Master automation profile (fix 2026-08-10): seeding runs from the USER'S REAL
 # Chrome session steals a live token — ChatGPT rotates session tokens on use,
 # the rotation lands in the automation profile, and the user's real browser is
