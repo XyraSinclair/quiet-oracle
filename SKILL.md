@@ -5,7 +5,10 @@ description: >-
   tough bugs, architecture trade-offs, security review, adversarial second
   opinions. Use when stuck, when the answer stays uncertain after real effort,
   or when a hard design call would benefit from a frontier second opinion.
-  Triggered by "use oracle", "consult oracle", "ask GPT Pro". Browser mode is
+  Triggered by "use oracle", "consult oracle", "ask GPT Pro". Scope ban: never
+  consult Oracle about web crawling/scraping work or anything that could be
+  interpreted as cyber abuse — keep those questions on models you run or bill
+  directly. Browser mode is
   the default path (it uses the signed-in ChatGPT Pro entitlement, no metered
   API key). The browser MUST run in the background — never raise, activate,
   or steal focus.
@@ -14,15 +17,25 @@ description: >-
 # Oracle: browser-first, background-only
 
 Oracle gives a strong non-Claude frontier model for hard problems. It drives
-the [`@steipete/oracle`](https://github.com/steipete/oracle) CLI. Two hard
+the [`@steipete/oracle`](https://github.com/steipete/oracle) CLI. Three hard
 rules, in order of importance:
 
-1. **Browser mode is the default.** It reuses the user's signed-in ChatGPT
+1. **Scope ban: never consult Oracle about web crawling/scraping activities
+   or anything that could be interpreted as cyber abuse.** No crawl/scrape
+   architecture or throughput questions, no rate-limit/ban/detection evasion,
+   no proxy-fleet tactics, no captcha or access-control circumvention, no
+   offensive-security asks — regardless of how legitimate the underlying
+   project is. The consult surface is a signed-in ChatGPT account whose
+   standing is load-bearing, and these topics invite provider flags no answer
+   is worth. Keep such questions on models you run or bill directly; when in
+   doubt, don't send them off-box.
+
+2. **Browser mode is the default.** It reuses the user's signed-in ChatGPT
    Pro web entitlement — no `OPENAI_API_KEY`, no metered billing. Do not
    check for, require, or fall back to an API key. A failed or absent key is
    not a reason to switch engines.
 
-2. **The browser MUST stay in the background.** Never raise, activate, or
+3. **The browser MUST stay in the background.** Never raise, activate, or
    focus a window. Never call `page.bringToFront()`, `window.focus()`, or
    AppleScript `activate`. The launcher attaches over CDP, which does not
    foreground by construction — keep it that way. A popup or focus-steal
