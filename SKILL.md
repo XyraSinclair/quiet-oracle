@@ -54,16 +54,24 @@ directory. It is the verified recipe and needs no flags to stay background:
     output shape. Indent inline code by four spaces; avoid nested backticks.
     ORACLE_PROMPT_END
 
-    /path/to/this/skill/scripts/oracle-bg.sh /tmp/oracle-prompt.md fix-login-race
+    ORACLE_BG_ACCEPT_SESSION_KILL=1 \
+      /path/to/this/skill/scripts/oracle-bg.sh /tmp/oracle-prompt.md fix-login-race
 
 Run it in the background and poll the output. Slugs MUST be 3–5
-hyphen-separated words — oracle 0.16.x rejects shorter ones.
+hyphen-separated words — oracle 0.16.x rejects shorter ones. The env var is
+required on every run: it acknowledges the same-account session-kill
+described under "Use a DEDICATED ChatGPT account" below, which has no local
+fix. Without it the launcher refuses (exit 2) by design — do not treat that
+refusal as a bug.
 
-The launcher finds the Chrome profile actually signed into ChatGPT, launches
-a DEDICATED Chrome in the background via `open -g` (never activates, never
-touches the user's main Chrome), seeds it with only the ChatGPT/OpenAI
-cookies, attaches oracle via `--remote-chrome` (oracle launches nothing, so
-no window flash), and cleans up on exit.
+The launcher runs DIRECTLY on the dedicated master automation profile when
+it is signed in and free (one run at a time via a lock; a concurrent run
+falls back to a per-run profile seeded with only the ChatGPT/OpenAI cookies
+from the master), launches that Chrome in the background via `open -g`
+(never activates, never touches the user's main Chrome), attaches oracle
+via `--remote-chrome` (oracle launches nothing, so no window flash), and
+cleans up on exit — per-run seeded profiles are deleted, the master never
+is.
 
 **Cookie filtering is a safety rule, not an optimization.** Seeding the whole
 cookie jar replays the user's Google session cookies from an unregistered
@@ -78,8 +86,8 @@ use, the rotation lands in the automation profile, and the user's live
 browser is left holding a stale session (observed: their ChatGPT degrades
 until they force a fresh session). The launcher now prefers a durable
 automation-owned profile at `~/.local/state/oracle-bg/chrome-master`
-(override `ORACLE_BG_MASTER`): runs seed cookies from it, never from the
-real Chrome, once it holds a ChatGPT session. One-time setup:
+(override `ORACLE_BG_MASTER`): runs attach to it directly — or seed cookies
+from it when it is busy — never from the real Chrome. One-time setup:
 `oracle-bg.sh --setup-master` launches a background Chrome on the master
 profile; the user foregrounds it, signs into ChatGPT once, and quits it.
 Until the master holds a signed-in session the launcher REFUSES to run

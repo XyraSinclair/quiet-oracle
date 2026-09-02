@@ -70,9 +70,13 @@ limits, fallbacks, and how to weigh the answer.
 
 Standalone (no Claude Code):
 
-    scripts/oracle-bg.sh /tmp/prompt.md fix-login-race
+    ORACLE_BG_ACCEPT_SESSION_KILL=1 scripts/oracle-bg.sh /tmp/prompt.md fix-login-race
 
-Write the prompt file first. Slugs must be 3–5 hyphen-separated words.
+Write the prompt file first. Slugs must be 3–5 hyphen-separated words. The
+env var is a deliberate speed bump, not ceremony: it acknowledges the
+same-account session-kill footgun below, which has no local fix. Without it
+the launcher refuses (exit 2) and prints the same explanation.
+(`--setup-master` runs without it.)
 
 ## Requirements
 
@@ -107,6 +111,20 @@ Each rule in the scripts exists because one of these drew blood.
 takes focus. `--browser-hide-window` still flashes on launch. The only
 zero-flash path is attaching to a Chrome that is already running in the
 background — which is exactly what the launcher does.
+
+**The same-account session kill.** Automated browser consults invalidate
+the ChatGPT account's *other* sessions server-side. After a consult runs,
+any normal browser signed into the same account gets silently logged out —
+observed on every post-run check across two days, with the account's Codex
+OAuth refresh token dying into permanent "reauth needed" in the same
+window. This is not a local cookie bug: it kept happening with the
+automation fully isolated in its own profile, zero contact with the real
+cookie jar, so no profile or cookie trick on your machine can prevent it.
+The only reliable fix is a ChatGPT account dedicated to the automation —
+signed into the master profile once via `--setup-master`, used by no human
+for anything else. Because there is no local fix, the launcher refuses to
+run until you acknowledge the trade explicitly with
+`ORACLE_BG_ACCEPT_SESSION_KILL=1` in the environment.
 
 **The Google mass-logout.** Seeding the whole cookie jar replays your
 Google session cookies from an unregistered browser instance. Google's

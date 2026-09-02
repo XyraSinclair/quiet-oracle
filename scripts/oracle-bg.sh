@@ -413,6 +413,31 @@ if [ -f "$HIDER" ]; then
   HIDE_PID=$!
 fi
 
+# Stale-tab purge (2026-09): the persistent master profile can come back up
+# with a PREVIOUS run's finished conversation tab (session restore after an
+# unclean exit, or a tab someone left open). The salvage scraper reads the
+# first chatgpt.com tab CDP lists, so a stale finished tab is a wrong-answer
+# machine: the watchdog would prove "terminal + stable" against the OLD
+# answer and end the run with it. Close every pre-existing chatgpt.com tab
+# before the picker/oracle open their own (a blank tab is opened first so
+# Chrome never hits zero tabs); conversation history lives server-side, so
+# nothing is lost.
+ORACLE_BG_PURGE_PORT="$PORT" node --input-type=module -e '
+try {
+  const base = `http://127.0.0.1:${Number(process.env.ORACLE_BG_PURGE_PORT)}`;
+  const targets = await (await fetch(`${base}/json/list`)).json();
+  const stale = targets.filter((t) => t.type === "page" && /chatgpt\.com/.test(t.url || ""));
+  if (stale.length > 0) {
+    await fetch(`${base}/json/new?about:blank`, { method: "PUT" }).catch(() => {});
+    for (const t of stale) await fetch(`${base}/json/close/${t.id}`).catch(() => {});
+    console.error(`oracle-bg: closed ${stale.length} stale chatgpt.com tab(s) left from a previous session`);
+  }
+} catch (e) {
+  console.error(`oracle-bg: WARNING: stale-tab purge failed (${e.message}) — if a previous conversation tab survived, the salvage watchdog could scrape a STALE answer`);
+  process.exit(1);
+}
+' || true
+
 # 4. attach oracle to the authenticated background Chrome.
 # Oracle runs in the background with a salvage watchdog: oracle <=0.16.1
 # double-counts conversation turns against the 2026-07 ChatGPT DOM, so its
