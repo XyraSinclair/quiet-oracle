@@ -2,7 +2,7 @@
 // oracle-pick-effort.mjs — set ChatGPT's effort tier (default: Pro) via CDP.
 //
 // ChatGPT moved effort tiers into a submenu of the composer pill that
-// @steipete/oracle <=1.3.0 cannot descend ("Unable to find model option
+// @steipete/oracle <=0.17.1 cannot descend ("Unable to find model option
 // matching 'Pro' ... Available: Advanced, Model GPT-5.6 Sol, Effort ...").
 // This script descends it with trusted CDP input, entirely keyboard-driven
 // after one trusted click on the pill, so it works on minimized/offscreen

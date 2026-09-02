@@ -8,10 +8,9 @@ description: >-
   Triggered by "use oracle", "consult oracle", "ask GPT Pro". Scope ban: never
   consult Oracle about web crawling/scraping work or anything that could be
   interpreted as cyber abuse — keep those questions on models you run or bill
-  directly. Browser mode is
-  the default path (it uses the signed-in ChatGPT Pro entitlement, no metered
-  API key). The browser MUST run in the background — never raise, activate,
-  or steal focus.
+  directly. Browser mode is the default path: it uses the signed-in ChatGPT
+  Pro entitlement, no metered API key. The browser MUST run in the
+  background — never raise, activate, or steal focus.
 ---
 
 # Oracle: browser-first, background-only
@@ -175,7 +174,7 @@ screen-scrape strings, not stable identifiers; verify against the live
 picker when in doubt.
 
 **Pro restored via effort pinning (2026-08-12):** ChatGPT moved the effort
-tiers into a submenu of the composer pill that oracle ≤1.3.0 cannot descend
+tiers into a submenu of the composer pill that oracle ≤0.17.1 cannot descend
 — `--model "Pro"` fails fast with "Unable to find model option matching
 'Pro' … Available: Advanced, Model …, Effort …". The launcher now fixes
 this itself: `scripts/oracle-pick-effort.mjs` opens the pill menu with one
@@ -207,7 +206,8 @@ case on screen is a 40 px corner crumb that other windows freely cover.
 
 **Version pin:** the recipe is verified against oracle 0.17.1 (the
 launcher's default pin); the salvage/turn-count notes above date to 0.16.x.
-Override with `ORACLE_BG_PKG` to trial a newer release.
+Upstream has since shipped 0.17.2, 0.17.3, and 0.18.0, untested against
+this recipe. Override with `ORACLE_BG_PKG` to trial a newer release.
 
 WHY the manual flags fail: `--engine browser` alone launches a VISIBLE
 focus-stealing Chrome; `--browser-hide-window` still flashes on launch; and

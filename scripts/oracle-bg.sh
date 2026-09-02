@@ -11,16 +11,18 @@
 #      the Cloudflare clearance stays bound to one stable fingerprint. One
 #      run at a time (mkdir lock); concurrent runs fall back to seeded copies.
 #   2. launches that Chrome in the background via `open -g` (never activates,
-#      never touches the user's main Chrome — separate profile) and keeps its
-#      windows MINIMIZED for the whole run via oracle-hide-window.mjs — `open
-#      -g` prevents focus steal but the window was still visible on the
-#      desktop, and macOS clamps --window-position so offscreen launch is
-#      impossible (measured 2026-08-12); CDP minimize is truly invisible and
-#      pages still stream/evaluate while minimized (verified),
+#      never touches the user's main Chrome — separate profile) and parks its
+#      windows in the clamped ~40px bottom-right corner sliver for the whole
+#      run via oracle-hide-window.mjs — `open -g` prevents focus steal but
+#      the window was still visible on the desktop, macOS clamps
+#      --window-position so a fully offscreen launch is impossible (measured
+#      2026-08-12), and minimizing stops frame production so the composer
+#      send breaks; the sliver keeps rendering live with at most a 40px
+#      corner crumb on screen, never raised,
 #   3. (seeded fallback only) copies ONLY the ChatGPT/OpenAI cookies from the
 #      master (WAL-safe sqlite .backup) into a per-run profile,
 #   4. pins the account's effort tier to Pro via oracle-pick-effort.mjs
-#      (ChatGPT's Advanced-submenu picker that oracle <=1.3.0 cannot descend;
+#      (ChatGPT's Advanced-submenu picker that oracle <=0.17.1 cannot descend;
 #      the choice persists server-side) and runs oracle with the CURRENT
 #      model — which is then Pro-tier by construction,
 #   5. attaches oracle via --remote-chrome (oracle launches nothing => no flash),
@@ -54,6 +56,11 @@
 # browser (then `current` IS Pro).
 set -uo pipefail
 umask 077  # seeded cookies + answer files must never be world-readable
+
+if [ $# -eq 0 ]; then
+  echo "usage: oracle-bg.sh <prompt-file> [slug] [-- extra oracle args...] | oracle-bg.sh --setup-master" >&2
+  exit 2
+fi
 
 # ── SAME-ACCOUNT SESSION-KILL GATE (2026-08): browser mode can log the user
 # out of ChatGPT in their real browser SERVER-SIDE even with a fully isolated
@@ -187,17 +194,10 @@ PORT="${ORACLE_BG_PORT:-$(derive_port)}" || exit 4
 PROFILE="${ORACLE_BG_PROFILE:-${TMPDIR:-/tmp}/oracle-bg-chrome-$SLUG}"
 MODEL="${ORACLE_BG_MODEL:-Pro}"
 URL="${ORACLE_CHATGPT_URL:-https://chatgpt.com/}"
-# Exact pin: 0.17.1 fixes 0.17.0's broken composer send. This machine's npm
-# runs a rolling now-7d publish cooldown (NPM_CONFIG_BEFORE, supply-chain
-# defense); an exact already-reviewed pin is outside that threat model
-# (fresh-publish attacks), so the install below bypasses the cooldown ONLY
-# when PKG carries an exact version. The cooldown admits 0.17.1 naturally
-# from 2026-08-13; the bypass then becomes a no-op.
+# Exact pin: 0.17.1 fixes 0.17.0's broken composer send; newer upstream
+# releases (0.17.2/0.17.3/0.18.0) exist but are untested against this
+# recipe. Override with ORACLE_BG_PKG to trial one.
 PKG="${ORACLE_BG_PKG:-@steipete/oracle@0.17.1}"
-case "$PKG" in
-  *oracle@[0-9]*) NPX_ENV=(NPM_CONFIG_BEFORE="2030-01-01T00:00:00Z") ;;
-  *) NPX_ENV=() ;;
-esac
 CHROME_ROOT="$HOME/Library/Application Support/Google/Chrome"
 
 SCRAPER="$(cd "$(dirname "$0")" && pwd)/oracle-scrape.mjs"
@@ -459,7 +459,10 @@ salvage() {
 run_oracle() {
   local strategy="$1" model_args=(--browser-model-strategy "$1")
   [ "$strategy" = "select" ] && model_args+=(--model "$MODEL")
-  env ${NPX_ENV[@]+"${NPX_ENV[@]}"} PKG_POLICY_BYPASS=1 npx -y "$PKG" \
+  # PKG_POLICY_BYPASS is inert unless the machine runs a local npx policy
+  # hook that honors it; an exact already-reviewed pin is outside the
+  # fresh-publish threat model such hooks defend against.
+  PKG_POLICY_BYPASS=1 npx -y "$PKG" \
     --engine browser \
     --remote-chrome "127.0.0.1:$PORT" \
     "${model_args[@]}" \
@@ -495,7 +498,7 @@ run_oracle() {
 }
 
 # Effort pinning (2026-08-12): ChatGPT moved effort tiers into a submenu of
-# the composer pill that oracle <=1.3.0 cannot descend, so its own picker can
+# the composer pill that oracle <=0.17.1 cannot descend, so its own picker can
 # no longer reach Pro. oracle-pick-effort.mjs descends it over CDP (trusted
 # keyboard input; works minimized) and the selection persists SERVER-SIDE per
 # account — after one success, the profile's current model IS Pro-tier. So:

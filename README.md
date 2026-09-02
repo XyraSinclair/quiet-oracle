@@ -3,8 +3,8 @@
 Consult GPT-5.x Pro from a coding agent's terminal, through your signed-in
 ChatGPT Pro browser session — in a background Chrome that never takes focus.
 
-This is a [Claude Code](https://code.claude.com/docs) skill plus two small
-scripts around Peter Steinberger's
+This is a [Claude Code](https://code.claude.com/docs) skill plus four small
+scripts (a launcher and three CDP helpers) around Peter Steinberger's
 [`@steipete/oracle`](https://github.com/steipete/oracle) CLI. The CLI does
 the heavy lifting. This repo contributes the launch recipe that makes it
 safe and invisible on a machine you are actively using, and the operating
@@ -24,7 +24,8 @@ reasoning, but only through the web UI. The naive automation paths all hurt:
   your machine (details below).
 
 `oracle-bg.sh` fixes all three. Your agent fires a consultation, keeps
-working, and collects the answer when it lands. You never see a window.
+working, and collects the answer when it lands. You never see a raised
+window — worst case, a 40 px corner sliver anything covers.
 
 ## How it works
 
@@ -40,10 +41,12 @@ working, and collects the answer when it lands. You never see a window.
    rotation coherent — the jar that owns the token receives the rotation —
    so the session survives indefinitely, and the Cloudflare clearance
    stays bound to one stable browser fingerprint.
-3. The Chrome launches with `open -g` (background, no activation) and its
-   windows are kept **minimized** for the whole run by a small CDP
-   watchdog (`scripts/oracle-hide-window.mjs`) — so it is not merely
-   unfocused but invisible.
+3. The Chrome launches with `open -g` (background, no activation) and a
+   small CDP watchdog (`scripts/oracle-hide-window.mjs`) parks its windows
+   in the clamped ~40 px bottom-right corner sliver for the whole run —
+   minimizing would stop frame production and break the send (see the
+   footgun map), so the window stays live but shrinks to a corner crumb
+   your own windows freely cover, never raised.
 4. The launcher pins the account's effort tier to **Pro** over CDP
    (`scripts/oracle-pick-effort.mjs` descends the picker submenu that the
    oracle CLI currently cannot; the choice persists server-side), then
@@ -148,7 +151,7 @@ combined labels like "5.6 Sol Pro", and a bare family label silently gets
 you a non-Pro tier.
 
 **The effort-submenu regression, and its fix (2026-08).** ChatGPT moved
-the effort tiers into a submenu of the composer pill that oracle ≤1.3.0
+the effort tiers into a submenu of the composer pill that oracle ≤0.17.1
 cannot descend, so `--model "Pro"` fails fast ("Unable to find model
 option matching 'Pro' … Available: Advanced, Model …, Effort …"). The
 launcher now pins the tier itself: `scripts/oracle-pick-effort.mjs`
@@ -160,7 +163,8 @@ launcher then simply runs oracle with `--browser-model-strategy current`
 — which is Pro-tier by construction. If pinning fails, it falls back to
 the old try-Pro-then-current chain and says loudly that the answer is not
 guaranteed Pro-tier. Separately, 0.17.0 broke the composer send; the
-launcher pins 0.17.1, which sends correctly.
+launcher pins 0.17.1, which sends correctly. Upstream has since shipped
+0.17.2, 0.17.3, and 0.18.0, which we have not tested against this recipe.
 
 **Minimized windows break the send.** The obvious way to hide the
 dedicated Chrome — minimize it — stops Chrome's frame production, ChatGPT
