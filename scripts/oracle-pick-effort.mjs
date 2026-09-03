@@ -2,7 +2,7 @@
 // oracle-pick-effort.mjs — set ChatGPT's effort tier (default: Pro) via CDP.
 //
 // ChatGPT moved effort tiers into a submenu of the composer pill that
-// @steipete/oracle <=0.17.1 cannot descend ("Unable to find model option
+// @steipete/oracle <=1.3.0 cannot descend ("Unable to find model option
 // matching 'Pro' ... Available: Advanced, Model GPT-5.6 Sol, Effort ...").
 // This script descends it with trusted CDP input, entirely keyboard-driven
 // after one trusted click on the pill, so it works on minimized/offscreen
@@ -16,6 +16,17 @@
 // Verified 2026-08-12 against chatgpt.com (menu: Advanced toggle, Model
 // submenu, Effort submenu with Instant/Medium/High/Extra High/Pro radios;
 // pill label mirrors the active tier and survives reload).
+//
+// 2026-09-02: ChatGPT replaced the Effort submenu with a 5-tick "Power"
+// SLIDER (data-model-reasoning-effort-slider) living in the picker's
+// "simple" view; the default "advanced" view shows only model radios, and
+// keyboard arrows do not reach the slider. New path: if the slider exists,
+// click the view toggle (advanced -> simple), then click the track at the
+// requested tier's tick (Instant=0 .. Pro=4; tick x offsets mirror the CSS:
+// 13px / 25%+6.5 / 50% / 75%-6.5 / width-13). Announcement text confirms
+// ("Pro, 5 of 5."), Escape closes, pill label verifies. Old keyboard path
+// kept as fallback for the previous menu shape. While the menu is open the
+// pill reads "Thinking effort", so the pill is only read with the menu shut.
 //
 // Dependency-free; node >= 22 (global WebSocket). Never activates a window.
 
@@ -109,6 +120,47 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const menuOpen = await evalJs(`!!document.querySelector('[role="menu"]')`);
   if (!menuOpen) die(2, "pill click did not open the picker menu");
 
+  const clickAt = async (x, y) => {
+    await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, pointerType: "mouse" }, sid);
+    await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1, pointerType: "mouse" }, sid);
+    await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1, pointerType: "mouse" }, sid);
+    await sleep(800);
+  };
+
+  // 2026-09 slider UI: "Power" slider in the picker's simple view
+  const hasSlider = await evalJs(`!!document.querySelector('[data-model-reasoning-effort-slider]')`);
+  if (hasSlider) {
+    const TIERS = ["Instant", "Medium", "High", "Extra High", "Pro"];
+    const idx = TIERS.indexOf(TIER);
+    if (idx < 0) { await key("Escape", "Escape", 27); die(3, `unknown tier "${TIER}" (slider offers ${TIERS.join("/")})`); }
+    const view = await evalJs(`document.querySelector('.d1BZWq_Menu')?.getAttribute('data-view')`);
+    if (view === "advanced") {
+      const tr = await evalJs(
+        `(()=>{const e=document.querySelector('.d1BZWq_ViewToggle');if(!e)return null;
+           const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+      if (!tr) die(2, "slider present but view toggle not found");
+      await clickAt(tr.x, tr.y);
+    }
+    const track = await evalJs(
+      `(()=>{const t=document.querySelector('._9wXMRW_Track');if(!t)return null;
+         const r=t.getBoundingClientRect();
+         const locked=Array.from(t.querySelectorAll('._9wXMRW_Tick')).map(e=>e.getAttribute('data-locked'));
+         return {x:r.x,y:r.y+r.height/2,w:r.width,locked};})()`);
+    if (!track) die(2, "effort slider track not found in simple view");
+    if (track.locked[idx] === "true") { await key("Escape", "Escape", 27); die(3, `tier "${TIER}" is locked on this account (entitlement)`); }
+    const off = [13, track.w * 0.25 + 6.5, track.w * 0.5, track.w * 0.75 - 6.5, track.w - 13][idx];
+    await clickAt(track.x + off, track.y);
+    const announce = await evalJs(`document.querySelector('.d1BZWq_KeyboardAnnouncement')?.textContent||''`);
+    if (!announce.startsWith(TIER)) { await key("Escape", "Escape", 27); die(2, `slider click did not land on ${TIER} (announcement: "${announce}")`); }
+    await key("Escape", "Escape", 27);
+    await sleep(600);
+    const after = await pillText();
+    if (after !== TIER) die(2, `selection did not stick (pill reads "${after}")`);
+    log(`selected ${TIER} via slider (persists server-side; 'current' strategy now answers ${TIER}-tier)`);
+    process.exit(0);
+  }
+
+  // legacy Effort-submenu path (pre-2026-09 menu shape)
   // keyboard: ArrowDown until the focused item is the Effort submenu trigger
   let found = false;
   for (let i = 0; i < 8; i++) {
